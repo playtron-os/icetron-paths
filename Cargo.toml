@@ -1,0 +1,18 @@
+[package]
+name = "icetron-paths"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90.0"
+license = "MIT"
+description = "XDG base-directory and bundled-native-library lookup, relative to the running executable"
+repository = "https://github.com/playtron-os/icetron-paths"
+authors = ["Playtron Team"]
+keywords = ["xdg", "basedir", "paths", "cef"]
+categories = ["filesystem", "os"]
+
+# Intentionally dependency-free. Headless services (credential daemons, file
+# watchers, sync services) need this lookup and must not acquire a D-Bus stack,
+# a filesystem watcher or a GUI toolkit to get it. This is also why the crate
+# lives on its own rather than inside icetron: public repositories depend on it,
+# and it must not drag an internal workspace along with it.
+[dependencies]
