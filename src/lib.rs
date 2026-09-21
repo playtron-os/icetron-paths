@@ -135,6 +135,76 @@ pub fn data_subdirs(sub: &str) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------------------
+// XDG user directories (Downloads, Documents, …)
+//
+// Named by `xdg-user-dirs` in `$XDG_CONFIG_HOME/user-dirs.dirs`, and localized: on a
+// French desktop the download directory is `~/Téléchargements`, so `~/Downloads` is only
+// the fallback when the file does not name one.
+// ---------------------------------------------------------------------------------------
+
+/// A user directory from `$XDG_CONFIG_HOME/user-dirs.dirs`, by its key without the
+/// `XDG_` / `_DIR` wrapping: `"DOWNLOAD"`, `"DOCUMENTS"`, `"PICTURES"`, ….
+///
+/// `None` when the file is missing or does not name the directory, and when it names
+/// `$HOME` itself, which is how `xdg-user-dirs` marks a directory as disabled.
+#[must_use]
+pub fn user_dir(key: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+    let text = std::fs::read_to_string(config_home()?.join("user-dirs.dirs")).ok()?;
+    parse_user_dir(&text, key, Path::new(&home))
+}
+
+/// The user's download directory: `XDG_DOWNLOAD_DIR` from `user-dirs.dirs`, else
+/// `$HOME/Downloads`. It may not exist yet; creating it is the caller's call.
+#[must_use]
+pub fn download_dir() -> Option<PathBuf> {
+    user_dir("DOWNLOAD").or_else(|| {
+        std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(|h| PathBuf::from(h).join("Downloads"))
+    })
+}
+
+/// The directory `user-dirs.dirs` assigns to `XDG_<key>_DIR`. The last assignment wins,
+/// as it would in the shell that the file is written for.
+///
+/// The format is a restricted shell assignment: a double-quoted value that is either
+/// absolute or starts with `$HOME`, with `\` escaping the next character.
+fn parse_user_dir(text: &str, key: &str, home: &Path) -> Option<PathBuf> {
+    let name = format!("XDG_{key}_DIR");
+    let value = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .find(|(k, _)| k.trim() == name)?
+        .1
+        .trim();
+    let value = unescape(value.strip_prefix('"')?.strip_suffix('"')?);
+    let dir = match value.strip_prefix("$HOME") {
+        Some(rest) if rest.is_empty() || rest == "/" => return None,
+        Some(rest) => home.join(rest.strip_prefix('/')?),
+        None if value.starts_with('/') => PathBuf::from(value),
+        None => return None,
+    };
+    Some(dir)
+}
+
+fn unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        out.push(if c == '\\' {
+            chars.next().unwrap_or('\\')
+        } else {
+            c
+        });
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------
 // Bundled native libraries (CEF, pdfium)
 //
 // These ship as loose shared libraries rather than as system packages with a stable soname on
@@ -708,5 +778,67 @@ mod native_lib_tests {
         let name = OsString::from("libpdfium.so");
         let dirs = library_candidates(&name, None, Some(Path::new("/home/dev/target/debug/app")));
         assert_eq!(dirs, vec![PathBuf::from("./libpdfium.so")]);
+    }
+
+    /// What `xdg-user-dirs-update` writes on a fresh English install.
+    const USER_DIRS: &str = r#"# This file is written by xdg-user-dirs-update
+# If you want to change or add directories, just edit the line you're
+# interested in. All local changes will be retained on the next run.
+# Format is XDG_xxx_DIR="$HOME/yyy", where yyy is a shell-escaped
+# homedir-relative path, or XDG_xxx_DIR="/yyy", where /yyy is an
+# absolute path. No other format is supported.
+#
+XDG_DESKTOP_DIR="$HOME/Desktop"
+XDG_DOWNLOAD_DIR="$HOME/Downloads"
+XDG_DOCUMENTS_DIR="$HOME/Documents"
+"#;
+
+    #[test]
+    fn user_dir_resolves_home_relative_entries() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            parse_user_dir(USER_DIRS, "DOWNLOAD", home),
+            Some(PathBuf::from("/home/u/Downloads"))
+        );
+        assert_eq!(
+            parse_user_dir(USER_DIRS, "DOCUMENTS", home),
+            Some(PathBuf::from("/home/u/Documents"))
+        );
+        assert_eq!(parse_user_dir(USER_DIRS, "MUSIC", home), None);
+    }
+
+    /// A localized desktop names its own directories; the last assignment wins, as in sh.
+    #[test]
+    fn user_dir_takes_the_localized_and_last_assignment() {
+        let text = format!("{USER_DIRS}XDG_DOWNLOAD_DIR=\"$HOME/Téléchargements\"\n");
+        assert_eq!(
+            parse_user_dir(&text, "DOWNLOAD", Path::new("/home/u")),
+            Some(PathBuf::from("/home/u/Téléchargements"))
+        );
+    }
+
+    #[test]
+    fn user_dir_accepts_absolute_paths_and_escapes() {
+        let text = r#"XDG_DOWNLOAD_DIR="/data/My \"Stuff\"""#;
+        assert_eq!(
+            parse_user_dir(text, "DOWNLOAD", Path::new("/home/u")),
+            Some(PathBuf::from(r#"/data/My "Stuff""#))
+        );
+    }
+
+    /// `$HOME` itself marks a directory as disabled, and anything neither absolute nor
+    /// `$HOME`-relative is outside the format.
+    #[test]
+    fn user_dir_rejects_disabled_and_malformed_entries() {
+        let home = Path::new("/home/u");
+        for line in [
+            r#"XDG_DOWNLOAD_DIR="$HOME/""#,
+            r#"XDG_DOWNLOAD_DIR="$HOME""#,
+            r#"XDG_DOWNLOAD_DIR="Downloads""#,
+            r"XDG_DOWNLOAD_DIR=$HOME/Downloads",
+            r#"# XDG_DOWNLOAD_DIR="$HOME/Downloads""#,
+        ] {
+            assert_eq!(parse_user_dir(line, "DOWNLOAD", home), None, "{line}");
+        }
     }
 }
