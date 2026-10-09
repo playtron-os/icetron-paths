@@ -43,6 +43,10 @@ file under `$HOME` can grant privileges the packager never granted.
 The XDG half builds everywhere, including `wasm32`. The native-library half (CEF, pdfium) is
 absent on wasm, where there is no dynamic library to find and no filesystem to find it on.
 
+A macOS app bundle is an install like any other: `Foo.app/Contents/MacOS/app` keeps its data in
+`Foo.app/Contents/Resources`, which `data_dirs` and `system_data_dirs` search where they would
+search `<prefix>/share`.
+
 ## License
 
 MIT

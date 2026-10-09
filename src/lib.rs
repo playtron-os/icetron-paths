@@ -12,7 +12,8 @@
 //! 2. the install prefix of the running executable (`<prefix>/bin/app` →
 //!    `<prefix>/share`), so a relocatable install — a Nix store path, an
 //!    `AppDir`, a `cargo install --root` tree — resolves its data with no
-//!    environment set at all,
+//!    environment set at all. A macOS bundle (`Foo.app/Contents/MacOS/app`)
+//!    resolves to its `Contents/Resources` the same way,
 //! 3. every `XDG_DATA_DIRS` / `XDG_CONFIG_DIRS` entry, defaulting to the
 //!    spec values `/usr/local/share:/usr/share` and `/etc/xdg` when unset —
 //!    which is exactly the FHS behaviour that used to be hardcoded.
@@ -55,14 +56,20 @@ pub fn config_home() -> Option<PathBuf> {
     )
 }
 
-/// Data roots to search, most specific first: [`data_home`], the install
-/// prefix's `share`, then every `XDG_DATA_DIRS` entry (spec default
-/// `/usr/local/share:/usr/share`). Duplicates are dropped.
+/// Data root of the running executable's install: see [`data_root_of`].
+#[must_use]
+pub fn install_data_root() -> Option<PathBuf> {
+    data_root_of(std::env::current_exe().ok()?.as_path())
+}
+
+/// Data roots to search, most specific first: [`data_home`], the install's
+/// data root ([`install_data_root`]), then every `XDG_DATA_DIRS` entry (spec
+/// default `/usr/local/share:/usr/share`). Duplicates are dropped.
 #[must_use]
 pub fn data_dirs() -> Vec<PathBuf> {
     resolve(
         data_home(),
-        install_prefix().map(|p| p.join("share")),
+        install_data_root(),
         std::env::var_os("XDG_DATA_DIRS"),
         DATA_DIRS_DEFAULT,
     )
@@ -81,8 +88,8 @@ pub fn config_dirs() -> Vec<PathBuf> {
     )
 }
 
-/// Data roots for the *system* layer only, most specific first: the install prefix's `share`,
-/// then every `XDG_DATA_DIRS` entry.
+/// Data roots for the *system* layer only, most specific first: the install's data root
+/// ([`install_data_root`]), then every `XDG_DATA_DIRS` entry.
 ///
 /// The per-user data dir is deliberately excluded. Some lookups are trust boundaries — a
 /// caller allow-list, say — where a file under `$HOME` must not be able to outrank the one
@@ -91,7 +98,7 @@ pub fn config_dirs() -> Vec<PathBuf> {
 pub fn system_data_dirs() -> Vec<PathBuf> {
     resolve(
         None,
-        install_prefix().map(|p| p.join("share")),
+        install_data_root(),
         std::env::var_os("XDG_DATA_DIRS"),
         DATA_DIRS_DEFAULT,
     )
@@ -410,6 +417,21 @@ pub fn prefix_of(exe: &Path) -> Option<PathBuf> {
         return None;
     }
     bin.parent().map(Path::to_path_buf)
+}
+
+/// Where an executable's install keeps its data: `<prefix>/share` for `<prefix>/bin/<exe>`,
+/// or `<bundle>.app/Contents/Resources` for a macOS bundle's `Contents/MacOS/<exe>`.
+#[must_use]
+pub fn data_root_of(exe: &Path) -> Option<PathBuf> {
+    if let Some(prefix) = prefix_of(exe) {
+        return Some(prefix.join("share"));
+    }
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    if macos.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+        return None;
+    }
+    Some(contents.join("Resources"))
 }
 
 /// Per-user dir: `xdg_home` verbatim when set, else `$HOME` joined with
